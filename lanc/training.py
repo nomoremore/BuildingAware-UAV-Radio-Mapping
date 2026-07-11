@@ -51,6 +51,7 @@ def train_lanc_model(
     config: TrainConfig,
     device: torch.device,
     output_dir: Path,
+    model_name: str,
 ) -> TrainResult:
     train_ds = TensorDataset(
         *(torch.from_numpy(x_train[name]) for name in BRANCH_ORDER),
@@ -66,6 +67,7 @@ def train_lanc_model(
         config=config,
         device=device,
         output_dir=output_dir,
+        model_name=model_name,
     )
 
 
@@ -76,6 +78,7 @@ def _train_loop(
     config: TrainConfig,
     device: torch.device,
     output_dir: Path,
+    model_name: str,
 ) -> TrainResult:
     model.to(device)
     loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True)
@@ -117,8 +120,8 @@ def _train_loop(
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    torch.save(model.state_dict(), output_dir / "BuildingAwareLANC.pt")
-    return TrainResult("BuildingAwareLANC", best_val_loss, len(history), history)
+    torch.save(model.state_dict(), output_dir / f"{model_name}.pt")
+    return TrainResult(model_name, best_val_loss, len(history), history)
 
 
 def _evaluate_loss(

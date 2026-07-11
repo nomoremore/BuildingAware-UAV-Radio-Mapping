@@ -195,7 +195,7 @@ def plot_coverage_slice_set(coverage_map: pd.DataFrame, output_dir: Path) -> lis
     return paths
 
 
-def plot_coverage_3d_maps(coverage_map: pd.DataFrame, output_dir: Path) -> list[Path]:
+def plot_coverage_3d_maps(coverage_map: pd.DataFrame, output_dir: Path, prefix: str = "") -> list[Path]:
     signal_vmin, signal_vmax = _color_limits(
         np.concatenate(
             [
@@ -208,7 +208,7 @@ def plot_coverage_3d_maps(coverage_map: pd.DataFrame, output_dir: Path) -> list[
     specs = [
         (
             "signal_pred_norm",
-            output_dir / "coverage_3d_pred.png",
+            output_dir / f"coverage_3d_{prefix}pred.png",
             "Predicted 3D radio map",
             "Predicted normalized signal",
             "viridis",
@@ -217,7 +217,7 @@ def plot_coverage_3d_maps(coverage_map: pd.DataFrame, output_dir: Path) -> list[
         ),
         (
             "signal_true_norm",
-            output_dir / "coverage_3d_true.png",
+            output_dir / f"coverage_3d_{prefix}true.png",
             "FARM true 3D radio map",
             "True normalized signal",
             "viridis",
@@ -226,7 +226,7 @@ def plot_coverage_3d_maps(coverage_map: pd.DataFrame, output_dir: Path) -> list[
         ),
         (
             "abs_error_norm",
-            output_dir / "coverage_3d_abs_error.png",
+            output_dir / f"coverage_3d_{prefix}abs_error.png",
             "3D absolute prediction error",
             "Absolute error (normalized)",
             "magma",
@@ -263,6 +263,7 @@ def plot_metric_summary(
     ax_table.axis("off")
     table_data = [
         ["NMSE ↓", f"{overall['nmse']:.6f}"],
+        ["Mean Error → 0", f"{overall['mean_error_norm']:.6f}"],
         ["RMSE ↓", f"{overall['rmse_norm']:.6f}"],
         ["Encoded RMSE ↓", f"{overall['rmse_encoded']:.3f}"],
         ["PSNR ↑", f"{overall['psnr_db']:.2f} dB"],
@@ -384,6 +385,7 @@ def _quality_row(
     mse = float(np.mean(error * error))
     rmse = float(np.sqrt(mse))
     mae = float(np.mean(np.abs(error)))
+    mean_error = float(np.mean(error))
     denom = float(np.sum(true * true))
     nmse = float(np.sum(error * error) / denom) if denom > 0 else float("nan")
     psnr = float("inf") if mse == 0 else float(20.0 * np.log10(1.0 / rmse))
@@ -392,6 +394,8 @@ def _quality_row(
         "scope": scope,
         "height_m": height_m,
         "nmse": nmse,
+        "mean_error_norm": mean_error,
+        "mean_error_encoded": mean_error * 255.0,
         "mae_norm": mae,
         "rmse_norm": rmse,
         "mae_encoded": mae * 255.0,
@@ -404,6 +408,11 @@ def _quality_row(
 def _ssim_for_layer(df: pd.DataFrame) -> float:
     true = df.pivot(index="rx_row", columns="rx_col", values="signal_true_norm").to_numpy(dtype=float)
     pred = df.pivot(index="rx_row", columns="rx_col", values="signal_pred_norm").to_numpy(dtype=float)
+    finite_mask = np.isfinite(true) & np.isfinite(pred)
+    if not finite_mask.any():
+        return float("nan")
+    true = true[finite_mask]
+    pred = pred[finite_mask]
     data_range = 1.0
     c1 = (0.01 * data_range) ** 2
     c2 = (0.03 * data_range) ** 2

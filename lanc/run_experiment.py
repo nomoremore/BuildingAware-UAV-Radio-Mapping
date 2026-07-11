@@ -24,11 +24,12 @@ from lanc.features import (
     BUILDING_FEATURES,
     add_farm_lanc_features,
     feature_sanity_checks,
+    get_branch_columns,
     inverse_target,
     prepare_matrix_pack,
     transform_with_pack,
 )
-from lanc.models import BuildingAwareLANC
+from lanc.models import BuildingAwareLANC, BuildingAwareLANCV2
 from lanc.training import TrainConfig, make_device, predict_lanc_model, set_seed, train_lanc_model
 
 
@@ -43,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tx", type=int, default=None)
     parser.add_argument("--one-yaw-per-tx", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--model", choices=("lanc_v1", "lanc_v2"), default="lanc_v2")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--hidden-dim", type=int, default=128)
@@ -63,7 +65,10 @@ def main() -> None:
 
     set_seed(args.seed)
     device = make_device(prefer_gpu=not args.cpu)
-    run_dir = args.output_root / f"farm_lanc_scene{args.scene_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = (
+        args.output_root
+        / f"farm_{args.model}_scene{args.scene_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
 
     preprocess_config = FarmPreprocessConfig(
@@ -89,8 +94,10 @@ def main() -> None:
     pairs.to_csv(run_dir / "farm_lanc_pairs.csv", index=False, encoding="utf-8-sig")
     (run_dir / "splits.json").write_text(json.dumps(splits, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    pack = prepare_matrix_pack(train_df, val_df, test_df)
-    model = BuildingAwareLANC(
+    pack = prepare_matrix_pack(train_df, val_df, test_df, args.model)
+    model_cls = BuildingAwareLANCV2 if args.model == "lanc_v2" else BuildingAwareLANC
+    model_name = "BuildingAwareLANCV2" if args.model == "lanc_v2" else "BuildingAwareLANC"
+    model = model_cls(
         geometry_dim=pack.x_train["geometry"].shape[1],
         frequency_dim=pack.x_train["frequency"].shape[1],
         antenna_dim=pack.x_train["antenna"].shape[1],
@@ -108,6 +115,7 @@ def main() -> None:
         config=train_config,
         device=device,
         output_dir=run_dir,
+        model_name=model_name,
     )
 
     test_pred_scaled = predict_lanc_model(model, pack.x_test, device)
@@ -115,7 +123,8 @@ def main() -> None:
     metrics = signal_metrics(test_df["signal_norm"].to_numpy(), test_pred_norm)
     metrics.update(
         {
-            "model": "BuildingAwareLANC",
+            "model": result.model_name,
+            "model_kind": args.model,
             "best_val_loss": result.best_val_loss,
             "epochs_ran": result.epochs_ran,
             "device": str(device),
@@ -186,6 +195,8 @@ def main() -> None:
             "coverage_nmse": float(overall_coverage_metrics.loc[0, "nmse"]),
             "coverage_rmse_norm": float(overall_coverage_metrics.loc[0, "rmse_norm"]),
             "coverage_rmse_encoded": float(overall_coverage_metrics.loc[0, "rmse_encoded"]),
+            "coverage_mean_error_norm": float(overall_coverage_metrics.loc[0, "mean_error_norm"]),
+            "coverage_mean_error_encoded": float(overall_coverage_metrics.loc[0, "mean_error_encoded"]),
             "coverage_psnr_db": float(overall_coverage_metrics.loc[0, "psnr_db"]),
             "coverage_ssim": float(overall_coverage_metrics.loc[0, "ssim"]),
         }
@@ -211,6 +222,11 @@ def main() -> None:
             "stride": args.stride,
             "max_tx": args.max_tx,
             "one_yaw_per_tx": args.one_yaw_per_tx,
+        },
+        "model": {
+            "kind": args.model,
+            "name": result.model_name,
+            "branch_columns": get_branch_columns(args.model),
         },
         "train": train_config.__dict__,
         "rows": {
@@ -238,6 +254,7 @@ def main() -> None:
                 "encoded_mae",
                 "coverage_nmse",
                 "coverage_rmse_encoded",
+                "coverage_mean_error_encoded",
                 "coverage_psnr_db",
                 "coverage_ssim",
                 "epochs_ran",
