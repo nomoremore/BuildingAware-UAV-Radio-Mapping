@@ -16,12 +16,12 @@ import pandas as pd
 import torch
 
 from lanc.active_sampling import (
+    STRATEGY_CHOICES,
     attach_rx_metadata,
     candidate_pool_with_scores,
     count_from_ratio,
-    mark_known_labels,
-    select_proposed_rx_ids,
     select_random_rx_ids,
+    select_strategy_rx_ids,
     split_pairs_by_rx_id,
 )
 from lanc.evaluation import (
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--initial-ratio", type=float, default=0.05)
     parser.add_argument("--budget-ratio", type=float, default=0.02)
-    parser.add_argument("--strategies", nargs="+", choices=("random", "proposed"), default=["random", "proposed"])
+    parser.add_argument("--strategies", nargs="+", choices=STRATEGY_CHOICES, default=["random", "proposed"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model", choices=("lanc_v1", "lanc_v2"), default=None)
     parser.add_argument("--epochs", type=int, default=8, help="Fine-tuning epochs per active round.")
@@ -81,7 +81,7 @@ def main() -> None:
         args.batch_size = min(args.batch_size, 1024)
 
     set_seed(args.seed)
-    rng = np.random.default_rng(args.seed)
+    initial_rng = np.random.default_rng(args.seed)
     device = make_device(prefer_gpu=not args.cpu)
     source_manifest = _read_json(args.source_run / "manifest.json")
     model_kind = args.model or source_manifest.get("model", {}).get("kind", "lanc_v2")
@@ -131,13 +131,14 @@ def main() -> None:
     all_rx_ids = base_candidate_pool["rx_id"].astype(str).tolist()
     initial_budget = count_from_ratio(len(all_rx_ids), args.initial_ratio)
     per_round_budget = count_from_ratio(len(all_rx_ids), args.budget_ratio)
-    initial_selected = select_random_rx_ids(base_candidate_pool, set(), initial_budget, rng)
+    initial_selected = select_random_rx_ids(base_candidate_pool, set(), initial_budget, initial_rng)
 
     metric_rows: list[dict[str, float | int | str]] = []
     selected_rows: list[dict[str, float | int | str]] = []
 
     for strategy in args.strategies:
         print(f"Running active sampling strategy: {strategy}")
+        strategy_rng = np.random.default_rng(_stable_strategy_seed(args.seed, strategy))
         model = _build_model(model_kind, branch_dims, args.hidden_dim, args.depth)
         model.load_state_dict(source_state)
         selected_rx_ids = list(initial_selected)
@@ -149,10 +150,13 @@ def main() -> None:
 
         for round_id in range(0, args.rounds + 1):
             if round_id > 0:
-                if strategy == "random":
-                    new_rx_ids = select_random_rx_ids(current_candidate_pool, selected_rx_ids, per_round_budget, rng)
-                else:
-                    new_rx_ids = select_proposed_rx_ids(current_candidate_pool, selected_rx_ids, per_round_budget, rng)
+                new_rx_ids = select_strategy_rx_ids(
+                    current_candidate_pool,
+                    selected_rx_ids,
+                    per_round_budget,
+                    strategy_rng,
+                    strategy,
+                )
                 selected_rx_ids.extend(new_rx_ids)
                 for rx_id in new_rx_ids:
                     selected_rows.append(
@@ -160,6 +164,8 @@ def main() -> None:
                     )
 
             if selected_rx_ids:
+                # 每个策略、每一轮使用相同的训练随机种子，避免策略运行顺序影响微调结果。
+                set_seed(args.seed + 1000 + round_id)
                 _fine_tune_on_selected_points(
                     model=model,
                     target_pairs=target_pairs,
@@ -175,12 +181,12 @@ def main() -> None:
                     device=device,
                     output_dir=run_dir,
                     model_name=f"fine_tuned_{model_name}_{strategy}",
-                    rng=rng,
+                    rng=np.random.default_rng(args.seed + 2000 + round_id),
                 )
 
             current_coverage = _predict_coverage(model, target_pairs, source_pack, device)
             current_candidate_pool = attach_rx_metadata(build_candidate_pool(current_coverage), target_pairs)
-            current_candidate_pool = candidate_pool_with_scores(current_candidate_pool, selected_rx_ids)
+            current_candidate_pool = candidate_pool_with_scores(current_candidate_pool, selected_rx_ids, strategy)
 
             prefix = f"after_{strategy}" if round_id == args.rounds else f"round{round_id}_{strategy}"
             coverage_path = run_dir / f"coverage_map_{prefix}.csv"
@@ -210,6 +216,9 @@ def main() -> None:
     _plot_active_curves(active_metrics, run_dir / "active_curve_rmse.png", "rmse_encoded", "Encoded RMSE")
     _plot_active_curves(active_metrics, run_dir / "active_curve_psnr_ssim.png", "psnr_db", "PSNR (dB)")
     _plot_active_curves(active_metrics, run_dir / "active_curve_ssim.png", "ssim", "SSIM")
+    summary = _write_strategy_comparison_summary(active_metrics, run_dir / "strategy_comparison_summary.csv")
+    _plot_strategy_comparison(summary, run_dir / "strategy_comparison_rmse.png", "rmse_encoded", "Final encoded RMSE")
+    _plot_strategy_comparison_psnr_ssim(summary, run_dir / "strategy_comparison_psnr_ssim.png")
 
     manifest = {
         "source_run": str(args.source_run),
@@ -242,6 +251,8 @@ def main() -> None:
 
     print(f"Run directory: {run_dir.resolve()}")
     print(active_metrics[["strategy", "round", "sampled_rx_count", "rmse_encoded", "psnr_db", "ssim"]].to_string(index=False))
+    print("Final strategy comparison:")
+    print(summary[["strategy", "round", "rmse_encoded", "psnr_db", "ssim", "mean_error_encoded"]].to_string(index=False))
 
 
 def _load_source_pack(source_run: Path, model_kind: str):
@@ -377,6 +388,58 @@ def _plot_active_curves(metrics: pd.DataFrame, output_path: Path, metric_name: s
     plt.close()
 
 
+def _write_strategy_comparison_summary(metrics: pd.DataFrame, output_path: Path) -> pd.DataFrame:
+    final_rows = []
+    for strategy, part in metrics.groupby("strategy"):
+        ordered = part.sort_values("round")
+        final_rows.append(ordered.iloc[-1].to_dict())
+    summary = pd.DataFrame(final_rows).sort_values("rmse_encoded").reset_index(drop=True)
+    summary["rmse_rank"] = np.arange(1, len(summary) + 1)
+    summary.to_csv(output_path, index=False, encoding="utf-8-sig")
+    return summary
+
+
+def _plot_strategy_comparison(
+    summary: pd.DataFrame,
+    output_path: Path,
+    metric_name: str,
+    ylabel: str,
+) -> None:
+    ordered = summary.sort_values(metric_name, ascending=True)
+    plt.figure(figsize=(9, 4.8))
+    plt.bar(ordered["strategy"], ordered[metric_name], color="#4c78a8")
+    plt.xlabel("Strategy")
+    plt.ylabel(ylabel)
+    plt.title(f"Final strategy comparison: {ylabel}")
+    plt.xticks(rotation=25, ha="right")
+    plt.grid(axis="y", alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=180)
+    plt.close()
+
+
+def _plot_strategy_comparison_psnr_ssim(summary: pd.DataFrame, output_path: Path) -> None:
+    ordered = summary.sort_values("rmse_encoded", ascending=True)
+    x = np.arange(len(ordered))
+    width = 0.38
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax1.bar(x - width / 2, ordered["psnr_db"], width=width, color="#59a14f", label="PSNR")
+    ax1.set_ylabel("PSNR (dB)")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(ordered["strategy"], rotation=25, ha="right")
+    ax1.grid(axis="y", alpha=0.25)
+    ax2 = ax1.twinx()
+    ax2.bar(x + width / 2, ordered["ssim"], width=width, color="#f28e2b", label="SSIM")
+    ax2.set_ylabel("SSIM")
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines + lines2, labels + labels2, loc="best")
+    ax1.set_title("Final strategy comparison: PSNR and SSIM")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -384,6 +447,11 @@ def _read_json(path: Path) -> dict:
 def _write_json(path: Path, data: dict) -> None:
     serializable = json.loads(json.dumps(data, ensure_ascii=False, default=str))
     path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _stable_strategy_seed(base_seed: int, strategy: str) -> int:
+    offset = sum((idx + 1) * ord(char) for idx, char in enumerate(strategy))
+    return int(base_seed + 100_000 + offset)
 
 
 if __name__ == "__main__":

@@ -7,9 +7,14 @@ import pandas as pd
 
 from lanc.active_sampling import (
     build_rx_metadata,
+    compute_gradient_score,
     count_from_ratio,
+    select_building_only_rx_ids,
+    select_proposed_v2_rx_ids,
     select_proposed_rx_ids,
     select_random_rx_ids,
+    select_uniform_grid_rx_ids,
+    select_weak_only_rx_ids,
 )
 from lanc.evaluation import coverage_quality_tables
 
@@ -70,6 +75,95 @@ class ActiveSamplingTest(unittest.TestCase):
         )
 
         self.assertEqual(selected, ["weak_complex"])
+
+    def test_weak_only_selection_prefers_lowest_predicted_signal(self) -> None:
+        candidates = pd.DataFrame(
+            {
+                "rx_id": ["strong", "weakest", "middle", "sampled"],
+                "signal_pred_norm": [0.9, 0.1, 0.4, 0.0],
+            }
+        )
+
+        selected = select_weak_only_rx_ids(candidates, already_selected={"sampled"}, budget=2)
+
+        self.assertEqual(selected, ["weakest", "middle"])
+
+    def test_building_only_selection_prefers_most_complex_environment(self) -> None:
+        candidates = pd.DataFrame(
+            {
+                "rx_id": ["plain", "dense", "blocked", "sampled"],
+                "building_density_nearby": [0.0, 0.9, 0.1, 1.0],
+                "path_building_ratio_simple": [0.0, 0.2, 0.95, 1.0],
+            }
+        )
+
+        selected = select_building_only_rx_ids(candidates, already_selected={"sampled"}, budget=2)
+
+        self.assertEqual(selected, ["dense", "blocked"])
+
+    def test_uniform_grid_selection_spreads_points_away_from_existing_samples(self) -> None:
+        rows = []
+        for row in [0.0, 100.0, 200.0]:
+            for col in [0.0, 100.0, 200.0]:
+                rows.append({"rx_id": f"r{int(row)}_c{int(col)}", "rx_row": row, "rx_col": col, "rx_height_m": 100.0})
+        candidates = pd.DataFrame(rows)
+
+        selected = select_uniform_grid_rx_ids(
+            candidates,
+            already_selected={"r100_c100"},
+            budget=4,
+            rng=np.random.default_rng(5),
+        )
+
+        selected_points = candidates[candidates["rx_id"].isin(selected)]
+        self.assertEqual(len(selected), 4)
+        self.assertGreaterEqual(float(selected_points["rx_col"].max() - selected_points["rx_col"].min()), 200.0)
+        self.assertGreaterEqual(float(selected_points["rx_row"].max() - selected_points["rx_row"].min()), 200.0)
+
+    def test_gradient_score_is_higher_near_prediction_discontinuity(self) -> None:
+        rows = []
+        for row in [0.0, 16.0, 32.0]:
+            for col in [0.0, 16.0, 32.0]:
+                rows.append(
+                    {
+                        "rx_id": f"r{int(row)}_c{int(col)}",
+                        "rx_row": row,
+                        "rx_col": col,
+                        "rx_height_m": 100.0,
+                        "signal_pred_norm": 0.1 if col < 16.0 else 0.9,
+                    }
+                )
+        candidates = pd.DataFrame(rows)
+
+        gradient = compute_gradient_score(candidates)
+        edge_score = float(gradient[candidates["rx_col"] == 16.0].mean())
+        flat_score = float(gradient[candidates["rx_col"] == 32.0].mean())
+
+        self.assertGreater(edge_score, flat_score)
+
+    def test_proposed_v2_selection_does_not_repeat_sampled_points(self) -> None:
+        candidates = pd.DataFrame(
+            {
+                "rx_id": ["sampled", "edge_weak", "clean"],
+                "rx_col": [0.0, 16.0, 32.0],
+                "rx_row": [0.0, 0.0, 0.0],
+                "rx_height_m": [100.0, 100.0, 100.0],
+                "signal_pred_norm": [0.1, 0.2, 0.8],
+                "building_density_nearby": [1.0, 0.8, 0.0],
+                "path_building_ratio_simple": [1.0, 0.7, 0.0],
+            }
+        )
+
+        selected = select_proposed_v2_rx_ids(
+            candidates,
+            already_selected={"sampled"},
+            budget=2,
+            rng=np.random.default_rng(17),
+            variant="proposed_v2_a",
+        )
+
+        self.assertNotIn("sampled", selected)
+        self.assertEqual(len(selected), len(set(selected)))
 
     def test_sparse_unmeasured_grid_keeps_ssim_finite(self) -> None:
         coverage_map = pd.DataFrame(

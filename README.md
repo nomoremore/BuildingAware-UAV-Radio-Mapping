@@ -104,7 +104,7 @@ runs/farm_lanc_v2_scene11_YYYYMMDD_HHMMSS/
   --rounds 5 `
   --initial-ratio 0.05 `
   --budget-ratio 0.02 `
-  --strategies random proposed
+  --strategies random uniform_grid weak_only building_only proposed proposed_v2_a proposed_v2_b proposed_v2_c proposed_v2_j
 ```
 
 快速调试：
@@ -117,7 +117,8 @@ runs/farm_lanc_v2_scene11_YYYYMMDD_HHMMSS/
   --rounds 1 `
   --initial-ratio 0.02 `
   --budget-ratio 0.01 `
-  --quick
+  --quick `
+  --strategies random uniform_grid weak_only proposed_v2_a
 ```
 
 主动实验输出到：
@@ -134,6 +135,9 @@ runs/active_scene11_to_scene12_YYYYMMDD_HHMMSS/
 - `coverage_map_zero_shot.csv`：未微调前的 scene 12 覆盖图。
 - `coverage_map_after_random.csv`：随机选点微调后的覆盖图。
 - `coverage_map_after_proposed.csv`：主动策略微调后的覆盖图。
+- `strategy_comparison_summary.csv`：各策略最终一轮的指标汇总和 RMSE 排名。
+- `strategy_comparison_rmse.png`：各策略最终 RMSE 对比图。
+- `strategy_comparison_psnr_ssim.png`：各策略最终 PSNR/SSIM 对比图。
 - `coverage_3d_zero_shot_pred.png`：scene 12 零样本预测三维图。
 - `coverage_3d_after_proposed_abs_error.png`：主动策略微调后的三维误差图。
 - `active_curve_rmse.png`、`active_curve_psnr_ssim.png`、`active_curve_ssim.png`：主动采样性能曲线。
