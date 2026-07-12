@@ -144,3 +144,117 @@ runs/active_scene11_to_scene12_YYYYMMDD_HHMMSS/
 - `fine_tuned_BuildingAwareLANCV2_proposed.pt`：主动策略微调后的模型权重。
 
 注意：主动采样前 scene 12 标签不直接给模型看；被选中的 `rx_id` 才从 FARM 真值中揭示标签，用来模拟 UAV 实测。
+
+## 最终论文实验流程
+
+当前建议把代码实验收口为：
+
+```text
+scene 11 预训练模型
+→ scene 12 主动采样策略开发
+→ scene 13 独立泛化验证
+→ 多随机种子稳定性实验
+→ 不同采样率实验
+→ 论文表格和图表汇总
+```
+
+主线策略固定为 `proposed_v2_j`。后续不要再根据 scene 13 结果调整模型结构或策略权重，否则 scene 13 就不再是干净的独立验证场景。
+
+### 1. 批量实验 dry-run
+
+先只打印将要运行的命令，确认不会误跑：
+
+```powershell
+.\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
+  --suite stability `
+  --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
+  --target-farm-root .\13 `
+  --target-scene-id 13 `
+  --dry-run
+```
+
+### 2. 多随机种子稳定性实验
+
+默认在 scene 13 上运行 `seed=42/2024/3407`，策略为：
+
+```text
+random, uniform_grid, weak_only, proposed, proposed_v2_j
+```
+
+命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
+  --suite stability `
+  --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
+  --target-farm-root .\13 `
+  --target-scene-id 13 `
+  --skip-existing
+```
+
+### 3. 不同采样率实验
+
+默认采样预算为：
+
+```text
+initial 2% + 每轮 1%
+initial 5% + 每轮 2%
+initial 10% + 每轮 2%
+```
+
+命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
+  --suite budget `
+  --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
+  --target-farm-root .\13 `
+  --target-scene-id 13 `
+  --skip-existing
+```
+
+批量实验输出在：
+
+```text
+runs/paper_batch_YYYYMMDD_HHMMSS/
+```
+
+关键文件：
+
+- `batch_manifest.csv`：每个子实验的配置、状态、输出目录和日志位置。
+- `logs/*.log`：每个子实验的完整运行日志。
+- `active_runs/`：每个子实验生成的主动采样 run 目录。
+
+### 4. 最终论文汇总
+
+把 scene 12 开发结果、scene 13 单次验证结果和批量实验结果汇总成论文表图：
+
+```powershell
+.\.venv\Scripts\python.exe -m lanc.summarize_paper_results `
+  --scene12-run runs\active_scene11_to_scene12_20260711_223226 `
+  --scene13-run runs\active_scene11_to_scene13_20260712_114611 `
+  --batch-manifest runs\paper_batch_YYYYMMDD_HHMMSS\batch_manifest.csv `
+  --main-strategy proposed_v2_j
+```
+
+汇总输出在：
+
+```text
+runs/paper_final_summary_YYYYMMDD_HHMMSS/
+```
+
+论文可用文件：
+
+- `strategy_mean_std_scene13.csv`：scene 13 多随机种子的策略均值和标准差。
+- `budget_curve_summary.csv`：不同采样率下的最终误差。
+- `zero_shot_vs_active_final.csv`：zero-shot 与主动采样微调的最终对比。
+- `strategy_rmse_mean_std.png`：不同策略 RMSE 均值和标准差图。
+- `strategy_psnr_ssim_mean_std.png`：不同策略 PSNR/SSIM 图。
+- `sampling_budget_curve.png`：采样率与误差关系图。
+- `final_zero_shot_vs_active.png`：zero-shot 与主动采样微调对比图。
+
+默认情况下，`building_only` 不进入主线论文图表；如果需要把它也画进主图，可以在汇总命令中加入：
+
+```powershell
+--include-building-only
+```
