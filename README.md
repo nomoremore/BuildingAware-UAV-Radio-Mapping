@@ -268,3 +268,9 @@ experiment_records/
 ```
 
 其中包含 scene 11 预训练、scene 12 策略开发、scene 13 独立验证和最终论文汇总的 CSV、PNG、模型权重与实验结论。完整 `runs/` 和原始 FARM 数据不进入 Git。
+
+按时间顺序整理、适合向导师汇报的详细说明位于：
+
+```text
+docs/实验进展汇报.md
+```
