@@ -1,0 +1,63 @@
+{
+  "source_run": "runs\\farm_lanc_v2_scene11_20260711_195624",
+  "source_model_path": "runs\\farm_lanc_v2_scene11_20260711_195624\\BuildingAwareLANCV2.pt",
+  "target": {
+    "farm_root": "13",
+    "scene_id": 13,
+    "frequency": "freq35",
+    "antenna_pattern": "pattern_120",
+    "heights_m": [
+      100,
+      110,
+      120,
+      130
+    ],
+    "stride": 16,
+    "max_tx": null,
+    "one_yaw_per_tx": false,
+    "local_window_radius": 2,
+    "path_samples": 16
+  },
+  "model_kind": "lanc_v2",
+  "model_name": "BuildingAwareLANCV2",
+  "seed": 42,
+  "device": "cuda",
+  "cuda_available": true,
+  "cuda_device": "NVIDIA GeForce GTX 1650 SUPER",
+  "zero_shot_metrics": {
+    "scope": "overall",
+    "height_m": NaN,
+    "nmse": 0.000973706287384908,
+    "mean_error_norm": -0.019448049289964523,
+    "mean_error_encoded": -4.959252568940953,
+    "mae_norm": 0.019448049289964523,
+    "rmse_norm": 0.020237050961313504,
+    "mae_encoded": 4.959252568940953,
+    "rmse_encoded": 5.160447995134944,
+    "psnr_db": 33.87705549330731,
+    "ssim": 0.9708386269232541,
+    "eval_rx_count": 4090
+  },
+  "active": {
+    "strategies": [
+      "random",
+      "uniform_grid",
+      "weak_only",
+      "building_only",
+      "proposed",
+      "proposed_v2_j"
+    ],
+    "rounds": 5,
+    "initial_ratio": 0.05,
+    "budget_ratio": 0.02,
+    "initial_budget_rx_count": 204,
+    "per_round_budget_rx_count": 82,
+    "evaluation": "Metrics are computed on unmeasured rx_id points after each active round."
+  },
+  "rows": {
+    "source_pairs": 1216512,
+    "target_pairs": 1202460,
+    "target_rx_points": 4090
+  },
+  "note": "FARM target labels are hidden until selected; revealed labels simulate UAV measurements."
+}

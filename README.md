@@ -258,3 +258,13 @@ runs/paper_final_summary_YYYYMMDD_HHMMSS/
 ```powershell
 --include-building-only
 ```
+
+## 已归档实验结果
+
+适合 GitHub 分享的精选实验记录位于：
+
+```text
+experiment_records/
+```
+
+其中包含 scene 11 预训练、scene 12 策略开发、scene 13 独立验证和最终论文汇总的 CSV、PNG、模型权重与实验结论。完整 `runs/` 和原始 FARM 数据不进入 Git。

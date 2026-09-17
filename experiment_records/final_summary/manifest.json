@@ -1,0 +1,19 @@
+{
+  "created_at": "2026-07-12T16:04:42",
+  "scene12_run": "runs\\active_scene11_to_scene12_20260711_223226",
+  "scene13_run": "runs\\active_scene11_to_scene13_20260712_114611",
+  "batch_manifest": "runs\\paper_batch_20260712_134030\\batch_manifest.csv",
+  "main_strategy": "proposed_v2_j",
+  "excluded_from_main_plots": [
+    "building_only"
+  ],
+  "outputs": [
+    "strategy_mean_std_scene13.csv",
+    "budget_curve_summary.csv",
+    "zero_shot_vs_active_final.csv",
+    "strategy_rmse_mean_std.png",
+    "strategy_psnr_ssim_mean_std.png",
+    "sampling_budget_curve.png",
+    "final_zero_shot_vs_active.png"
+  ]
+}
