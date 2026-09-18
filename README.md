@@ -92,22 +92,26 @@ runs/farm_lanc_v2_scene11_YYYYMMDD_HHMMSS/
 
 建筑物特征当前从 FARM 的 `value == 0` 占据区域近似提取，后续可以替换成更标准的三维建筑物地图或 OSM/LiDAR 特征。
 
-## Scene 12 主动采样实验
+## 主动采样策略
 
-在 scene 11 预训练模型基础上，把 scene 12 当作新目标场景：
+主动采样以 `rx_id` 为一个 UAV 三维测点。选中某个 `rx_id` 后，该位置下所有 TX/Yaw 配置的 FARM 标签会一起揭示，用来模拟一次无人机空间测量。每次评估只使用尚未采样的 `rx_id`，避免把已测点自身的准确率算进提升。
 
-```powershell
-.\.venv\Scripts\python.exe -m lanc.run_active_experiment `
-  --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
-  --target-farm-root .\12 `
-  --target-scene-id 12 `
-  --rounds 5 `
-  --initial-ratio 0.05 `
-  --budget-ratio 0.02 `
-  --strategies random uniform_grid weak_only building_only proposed proposed_v2_a proposed_v2_b proposed_v2_c proposed_v2_j
+当前主线策略是 `proposed_v3`：
+
+```text
+每轮预算 = 覆盖配额 + 建筑利用配额
+覆盖配额：4 个高度层轮询 + 8x8 空间分层 + 空间分散
+建筑利用配额：0.50 building + 0.20 diversity
+             + 0.15 prediction_spread + 0.15 gradient
 ```
 
-快速调试：
+`rho` 控制覆盖配额比例，预定义取值为 `0.4/0.5/0.6`。scene 12 只用于开发阶段选择 `rho`；冻结策略后，scene 13 只做独立验证，不再根据 scene 13 结果修改 `rho` 或评分权重。
+
+`prediction_spread_norm` 是同一接收点在多个 TX/Yaw 配置间的预测标准差，表示“多配置预测分歧”，不是严格的贝叶斯不确定性。
+
+### 快速 smoke test
+
+先确认 V3 的选点、微调、指标和图像输出链路正常：
 
 ```powershell
 .\.venv\Scripts\python.exe -m lanc.run_active_experiment `
@@ -118,7 +122,7 @@ runs/farm_lanc_v2_scene11_YYYYMMDD_HHMMSS/
   --initial-ratio 0.02 `
   --budget-ratio 0.01 `
   --quick `
-  --strategies random uniform_grid weak_only proposed_v2_a
+  --strategies random building_only proposed_v2_j proposed_v3
 ```
 
 主动实验输出到：
@@ -129,91 +133,86 @@ runs/active_scene11_to_scene12_YYYYMMDD_HHMMSS/
 
 关键文件：
 
-- `zero_shot_metrics.csv`：scene 11 模型直接预测 scene 12 的零样本误差。
+- `zero_shot_metrics.csv`：预训练模型直接预测目标场景的零样本误差。
 - `active_round_metrics.csv`：每轮主动采样和微调后的 NMSE、RMSE、PSNR、SSIM。
 - `active_selected_rx_points.csv`：每轮选中的 UAV 三维测点。
-- `coverage_map_zero_shot.csv`：未微调前的 scene 12 覆盖图。
-- `coverage_map_after_random.csv`：随机选点微调后的覆盖图。
-- `coverage_map_after_proposed.csv`：主动策略微调后的覆盖图。
+- `proposed_v3_selection_diagnostics.csv`：V3 每轮的预算、覆盖配额、高度分布、空间分区覆盖数和评分统计。
+- `candidate_pool_zero_shot.csv`：包含 `prediction_spread_norm`、建筑特征和选点评分的候选池。
 - `strategy_comparison_summary.csv`：各策略最终一轮的指标汇总和 RMSE 排名。
-- `strategy_comparison_rmse.png`：各策略最终 RMSE 对比图。
-- `strategy_comparison_psnr_ssim.png`：各策略最终 PSNR/SSIM 对比图。
-- `coverage_3d_zero_shot_pred.png`：scene 12 零样本预测三维图。
-- `coverage_3d_after_proposed_abs_error.png`：主动策略微调后的三维误差图。
-- `active_curve_rmse.png`、`active_curve_psnr_ssim.png`、`active_curve_ssim.png`：主动采样性能曲线。
-- `fine_tuned_BuildingAwareLANCV2_proposed.pt`：主动策略微调后的模型权重。
-
-注意：主动采样前 scene 12 标签不直接给模型看；被选中的 `rx_id` 才从 FARM 真值中揭示标签，用来模拟 UAV 实测。
+- `coverage_3d_after_proposed_v3_pred.png`：V3 微调后的三维预测图。
+- `coverage_3d_after_proposed_v3_abs_error.png`：V3 微调后的三维绝对误差图。
+- `fine_tuned_BuildingAwareLANCV2_proposed_v3.pt`：V3 微调后的模型权重。
 
 ## 最终论文实验流程
 
-当前建议把代码实验收口为：
+完整实验主线为：
 
 ```text
 scene 11 预训练模型
-→ scene 12 主动采样策略开发
-→ scene 13 独立泛化验证
-→ 多随机种子稳定性实验
-→ 不同采样率实验
+→ scene 12 六随机种子策略开发并选择 rho
+→ 冻结 proposed_v3
+→ scene 13 六随机种子独立验证
+→ scene 13 三个采样预算验证
 → 论文表格和图表汇总
 ```
 
-主线策略固定为 `proposed_v2_j`。后续不要再根据 scene 13 结果调整模型结构或策略权重，否则 scene 13 就不再是干净的独立验证场景。
+### 1. Scene 12 策略开发
 
-### 1. 批量实验 dry-run
-
-先只打印将要运行的命令，确认不会误跑：
+先用 dry-run 检查六个随机种子的命令：
 
 ```powershell
 .\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
   --suite stability `
+  --strategy-mode development `
   --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
-  --target-farm-root .\13 `
-  --target-scene-id 13 `
+  --target-farm-root .\12 `
+  --target-scene-id 12 `
   --dry-run
 ```
 
-### 2. 多随机种子稳定性实验
-
-默认在 scene 13 上运行 `seed=42/2024/3407`，策略为：
-
-```text
-random, uniform_grid, weak_only, proposed, proposed_v2_j
-```
-
-命令：
+正式运行 `seed=42/2024/3407/1234/5678/9012`。development 模式同时比较全部 baseline，以及 `proposed_v3_rho04/rho05/rho06`：
 
 ```powershell
 .\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
   --suite stability `
+  --strategy-mode development `
+  --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
+  --target-farm-root .\12 `
+  --target-scene-id 12 `
+  --skip-existing
+```
+
+从批量结果中按六个种子的平均 encoded RMSE 选择 `rho`。若前两名 RMSE 差值小于 `0.01`，选择 PSNR 和 SSIM 退化更小者。选中后只保留一个冻结策略名 `proposed_v3`，并停止在 scene 12 上继续调权。
+
+### 2. Scene 13 独立验证
+
+最终 stability 模式使用六个随机种子，并包含 `random`、`uniform_grid`、`weak_only`、`building_only`、`proposed`、`proposed_v2_j`、`proposed_v3`：
+
+```powershell
+.\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
+  --suite stability `
+  --strategy-mode final `
   --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
   --target-farm-root .\13 `
   --target-scene-id 13 `
   --skip-existing
 ```
 
-### 3. 不同采样率实验
+### 3. Scene 13 采样预算实验
 
-默认采样预算为：
-
-```text
-initial 2% + 每轮 1%
-initial 5% + 每轮 2%
-initial 10% + 每轮 2%
-```
-
-命令：
+三种预算为 `initial 2% + 每轮 1%`、`initial 5% + 每轮 2%`、`initial 10% + 每轮 2%`，比较 `random`、`building_only`、`proposed_v3`：
 
 ```powershell
 .\.venv\Scripts\python.exe -m lanc.run_paper_experiments `
   --suite budget `
+  --strategy-mode final `
   --source-run runs\farm_lanc_v2_scene11_20260711_195624 `
   --target-farm-root .\13 `
   --target-scene-id 13 `
   --skip-existing
 ```
 
-批量实验输出在：
+批量实验输出到：
 
 ```text
 runs/paper_batch_YYYYMMDD_HHMMSS/
@@ -221,20 +220,20 @@ runs/paper_batch_YYYYMMDD_HHMMSS/
 
 关键文件：
 
-- `batch_manifest.csv`：每个子实验的配置、状态、输出目录和日志位置。
+- `batch_manifest.csv`：每个子实验的 seed、预算、策略、状态、输出目录和日志位置。
 - `logs/*.log`：每个子实验的完整运行日志。
 - `active_runs/`：每个子实验生成的主动采样 run 目录。
 
 ### 4. 最终论文汇总
 
-把 scene 12 开发结果、scene 13 单次验证结果和批量实验结果汇总成论文表图：
+把 scene 12 开发结果、scene 13 验证结果和批量实验汇总成论文表图：
 
 ```powershell
 .\.venv\Scripts\python.exe -m lanc.summarize_paper_results `
-  --scene12-run runs\active_scene11_to_scene12_20260711_223226 `
-  --scene13-run runs\active_scene11_to_scene13_20260712_114611 `
+  --scene12-run runs\active_scene11_to_scene12_YYYYMMDD_HHMMSS `
+  --scene13-run runs\active_scene11_to_scene13_YYYYMMDD_HHMMSS `
   --batch-manifest runs\paper_batch_YYYYMMDD_HHMMSS\batch_manifest.csv `
-  --main-strategy proposed_v2_j
+  --main-strategy proposed_v3
 ```
 
 汇总输出在：
@@ -245,19 +244,15 @@ runs/paper_final_summary_YYYYMMDD_HHMMSS/
 
 论文可用文件：
 
-- `strategy_mean_std_scene13.csv`：scene 13 多随机种子的策略均值和标准差。
-- `budget_curve_summary.csv`：不同采样率下的最终误差。
+- `strategy_mean_std_scene13.csv`：scene 13 各策略的均值、标准差和逐 seed RMSE 胜率。
+- `budget_curve_summary.csv`：三个采样预算下的最终误差。
 - `zero_shot_vs_active_final.csv`：zero-shot 与主动采样微调的最终对比。
-- `strategy_rmse_mean_std.png`：不同策略 RMSE 均值和标准差图。
-- `strategy_psnr_ssim_mean_std.png`：不同策略 PSNR/SSIM 图。
+- `strategy_rmse_mean_std.png`：各策略 RMSE 均值和标准差图。
+- `strategy_psnr_ssim_mean_std.png`：各策略 PSNR/SSIM 对比图。
 - `sampling_budget_curve.png`：采样率与误差关系图。
 - `final_zero_shot_vs_active.png`：zero-shot 与主动采样微调对比图。
 
-默认情况下，`building_only` 不进入主线论文图表；如果需要把它也画进主图，可以在汇总命令中加入：
-
-```powershell
---include-building-only
-```
+`building_only` 必须保留在主线比较和论文主图中。验收关注六种子平均性能、RMSE 稳定性、PSNR/SSIM 退化幅度和预算曲线，不声称随机采样下每个 seed、每个预算都必然获胜。
 
 ## 已归档实验结果
 

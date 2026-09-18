@@ -21,7 +21,7 @@ from lanc.summarize_paper_results import (
 
 
 class PaperExperimentWorkflowTest(unittest.TestCase):
-    def test_stability_suite_builds_three_seed_specs(self) -> None:
+    def test_stability_suite_builds_six_seed_specs_with_final_strategy_set(self) -> None:
         config = BatchConfig(
             suite="stability",
             source_run=Path("runs/source"),
@@ -31,14 +31,32 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
 
         specs = build_experiment_specs(config)
 
-        self.assertEqual([spec.seed for spec in specs], [42, 2024, 3407])
+        self.assertEqual([spec.seed for spec in specs], [42, 2024, 3407, 1234, 5678, 9012])
         self.assertTrue(all(spec.suite == "stability" for spec in specs))
         self.assertTrue(all(spec.initial_ratio == 0.05 for spec in specs))
         self.assertTrue(all(spec.budget_ratio == 0.02 for spec in specs))
+        self.assertIn("proposed_v3", specs[0].strategies)
         self.assertIn("proposed_v2_j", specs[0].strategies)
-        self.assertNotIn("building_only", specs[0].strategies)
+        self.assertIn("building_only", specs[0].strategies)
+        self.assertNotIn("proposed_v3_rho04", specs[0].strategies)
 
-    def test_budget_suite_builds_three_budget_specs_with_two_strategies(self) -> None:
+    def test_development_mode_adds_all_v3_rho_variants(self) -> None:
+        config = BatchConfig(
+            suite="stability",
+            source_run=Path("runs/source"),
+            target_farm_root=Path("12"),
+            target_scene_id=12,
+            strategy_mode="development",
+        )
+
+        specs = build_experiment_specs(config)
+
+        self.assertIn("proposed_v3", specs[0].strategies)
+        self.assertIn("proposed_v3_rho04", specs[0].strategies)
+        self.assertIn("proposed_v3_rho05", specs[0].strategies)
+        self.assertIn("proposed_v3_rho06", specs[0].strategies)
+
+    def test_budget_suite_builds_three_budget_specs_with_main_baselines(self) -> None:
         config = BatchConfig(
             suite="budget",
             source_run=Path("runs/source"),
@@ -49,7 +67,7 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
         specs = build_experiment_specs(config)
 
         self.assertEqual([(spec.initial_ratio, spec.budget_ratio) for spec in specs], [(0.02, 0.01), (0.05, 0.02), (0.10, 0.02)])
-        self.assertTrue(all(spec.strategies == ("random", "proposed_v2_j") for spec in specs))
+        self.assertTrue(all(spec.strategies == ("random", "building_only", "proposed_v3") for spec in specs))
         self.assertTrue(all(spec.seed == 42 for spec in specs))
 
     def test_command_for_spec_uses_module_entry_and_strategy_list(self) -> None:
@@ -68,7 +86,7 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
         self.assertIn("--target-scene-id", command)
         self.assertIn("13", command)
         self.assertIn("--strategies", command)
-        self.assertEqual(command[-2:], ["random", "proposed_v2_j"])
+        self.assertEqual(command[-3:], ["random", "building_only", "proposed_v3"])
 
     def test_skip_existing_filters_completed_matching_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -98,7 +116,7 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
             self.assertNotIn(specs[0].config_key, {spec.config_key for spec in filtered})
             self.assertEqual(len(filtered), len(specs) - 1)
 
-    def test_strategy_mean_std_ignores_building_only_for_main_table(self) -> None:
+    def test_strategy_mean_std_includes_building_only_and_win_rate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             run_a = _make_active_run(root / "run_a", scene_id=13, rmse_random=5.0, rmse_proposed=4.5)
@@ -113,10 +131,16 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
 
             summary = build_strategy_mean_std(manifest, exclude_strategies={"building_only"})
 
-            self.assertEqual(set(summary["strategy"]), {"random", "proposed_v2_j"})
-            proposed = summary[summary["strategy"] == "proposed_v2_j"].iloc[0]
+            self.assertEqual(set(summary["strategy"]), {"random", "proposed_v3"})
+            proposed = summary[summary["strategy"] == "proposed_v3"].iloc[0]
             self.assertAlmostEqual(float(proposed["rmse_encoded_mean"]), 5.0)
             self.assertEqual(int(proposed["run_count"]), 2)
+            self.assertIn("rmse_win_rate", summary.columns)
+
+            full_summary = build_strategy_mean_std(manifest)
+            building_only = full_summary[full_summary["strategy"] == "building_only"].iloc[0]
+            self.assertEqual(set(full_summary["strategy"]), {"random", "proposed_v3", "building_only"})
+            self.assertAlmostEqual(float(building_only["rmse_win_rate"]), 1.0)
 
     def test_budget_curve_summary_groups_by_budget_and_strategy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,7 +169,7 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
 
             summary = build_budget_curve_summary(manifest)
 
-            self.assertEqual(len(summary), 4)
+            self.assertEqual(len(summary), 6)
             self.assertIn("final_sampled_ratio", summary.columns)
             self.assertTrue((summary["rmse_encoded_mean"] > 0).all())
 
@@ -159,7 +183,7 @@ class PaperExperimentWorkflowTest(unittest.TestCase):
                 [{"suite": "stability", "status": "completed", "run_dir": str(scene13)}]
             ).to_csv(manifest, index=False)
 
-            summary = build_zero_shot_vs_active_final(scene12, scene13, manifest, "proposed_v2_j")
+            summary = build_zero_shot_vs_active_final(scene12, scene13, manifest, "proposed_v3")
 
             self.assertIn("scene12_development", set(summary["experiment_group"]))
             self.assertIn("scene13_single_run", set(summary["experiment_group"]))
@@ -186,7 +210,7 @@ def _make_active_run(path: Path, scene_id: int, rmse_random: float, rmse_propose
     pd.DataFrame(
         [
             {
-                "strategy": "proposed_v2_j",
+                "strategy": "proposed_v3",
                 "round": 5,
                 "sampled_ratio": 0.15,
                 "rmse_encoded": rmse_proposed,
@@ -221,8 +245,8 @@ def _make_active_run(path: Path, scene_id: int, rmse_random: float, rmse_propose
         [
             {"strategy": "random", "round": 0, "rmse_encoded": rmse_random + 0.4, "psnr_db": 33.0, "ssim": 0.95},
             {"strategy": "random", "round": 5, "rmse_encoded": rmse_random, "psnr_db": 34.0, "ssim": 0.96},
-            {"strategy": "proposed_v2_j", "round": 0, "rmse_encoded": rmse_proposed + 0.5, "psnr_db": 33.0, "ssim": 0.95},
-            {"strategy": "proposed_v2_j", "round": 5, "rmse_encoded": rmse_proposed, "psnr_db": 35.0, "ssim": 0.97},
+            {"strategy": "proposed_v3", "round": 0, "rmse_encoded": rmse_proposed + 0.5, "psnr_db": 33.0, "ssim": 0.95},
+            {"strategy": "proposed_v3", "round": 5, "rmse_encoded": rmse_proposed, "psnr_db": 35.0, "ssim": 0.97},
         ]
     ).to_csv(path / "active_round_metrics.csv", index=False)
     return path

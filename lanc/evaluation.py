@@ -51,6 +51,15 @@ def build_coverage_map(pair_df: pd.DataFrame, pred_norm: np.ndarray) -> pd.DataF
     temp["signal_pred_norm"] = np.clip(pred_norm, 0.0, 1.0)
     temp["signal_pred_encoded"] = temp["signal_pred_norm"] * 255.0
 
+    # 同一接收点在多个 tx/yaw 配置下的预测标准差，表示多配置预测分歧。
+    # 它不是严格的贝叶斯不确定性，但可作为主动采样时判断覆盖突变和模型不稳定的代理特征。
+    prediction_spread = (
+        temp.groupby("rx_id")["signal_pred_norm"]
+        .std(ddof=0)
+        .rename("prediction_spread_norm")
+        .reset_index()
+    )
+
     # 多发射机/多朝向融合：同一个三维接收点取预测信号最强的配置，形成区域级三维无线信号图。
     pred_idx = temp.groupby("rx_id")["signal_pred_norm"].idxmax()
     pred_map = temp.loc[pred_idx].rename(
@@ -73,7 +82,8 @@ def build_coverage_map(pair_df: pd.DataFrame, pred_norm: np.ndarray) -> pd.DataF
             "signal_encoded": "signal_true_encoded",
         }
     )
-    merged = pred_map.merge(true_map, on="rx_id", how="left")
+    merged = pred_map.merge(true_map, on="rx_id", how="left").merge(prediction_spread, on="rx_id", how="left")
+    merged["prediction_spread_norm"] = merged["prediction_spread_norm"].fillna(0.0)
     merged["signal_error_norm"] = merged["signal_pred_norm"] - merged["signal_true_norm"]
     merged["abs_error_norm"] = np.abs(merged["signal_error_norm"])
     merged["signal_error_encoded"] = merged["signal_error_norm"] * 255.0
@@ -99,13 +109,22 @@ def build_coverage_map(pair_df: pd.DataFrame, pred_norm: np.ndarray) -> pd.DataF
         "abs_error_norm",
         "signal_error_encoded",
         "abs_error_encoded",
+        "prediction_spread_norm",
     ]
     return merged[columns].sort_values(["rx_height_m", "rx_row", "rx_col"]).reset_index(drop=True)
 
 
 def build_candidate_pool(coverage_map: pd.DataFrame) -> pd.DataFrame:
     pool = coverage_map[
-        ["rx_id", "rx_col", "rx_row", "rx_height_m", "signal_true_norm", "signal_pred_norm"]
+        [
+            "rx_id",
+            "rx_col",
+            "rx_row",
+            "rx_height_m",
+            "signal_true_norm",
+            "signal_pred_norm",
+            "prediction_spread_norm",
+        ]
     ].copy()
     pool["label_known"] = False
     pool["uncertainty"] = 0.0
@@ -119,6 +138,7 @@ def build_candidate_pool(coverage_map: pd.DataFrame) -> pd.DataFrame:
             "label_known",
             "signal_true_norm",
             "signal_pred_norm",
+            "prediction_spread_norm",
             "uncertainty",
             "value_score",
         ]

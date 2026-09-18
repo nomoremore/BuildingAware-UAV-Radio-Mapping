@@ -16,8 +16,10 @@ import pandas as pd
 import torch
 
 from lanc.active_sampling import (
+    PROPOSED_V3_RHOS,
     STRATEGY_CHOICES,
     attach_rx_metadata,
+    build_proposed_v3_diagnostics,
     candidate_pool_with_scores,
     count_from_ratio,
     select_random_rx_ids,
@@ -135,6 +137,7 @@ def main() -> None:
 
     metric_rows: list[dict[str, float | int | str]] = []
     selected_rows: list[dict[str, float | int | str]] = []
+    diagnostic_rows: list[dict[str, float | int | str]] = []
 
     for strategy in args.strategies:
         print(f"Running active sampling strategy: {strategy}")
@@ -162,6 +165,22 @@ def main() -> None:
                     selected_rows.append(
                         {"strategy": strategy, "round": round_id, "rx_id": rx_id, "selection_phase": "active"}
                     )
+                if strategy in PROPOSED_V3_RHOS:
+                    diagnostics = build_proposed_v3_diagnostics(
+                        current_candidate_pool,
+                        new_rx_ids,
+                        variant=strategy,
+                        round_budget=per_round_budget,
+                    )
+                    diagnostics.update(
+                        {
+                            "strategy": strategy,
+                            "round": round_id,
+                            "round_budget": per_round_budget,
+                            "cumulative_selected_count": len(set(selected_rx_ids)),
+                        }
+                    )
+                    diagnostic_rows.append(diagnostics)
 
             if selected_rx_ids:
                 # 每个策略、每一轮使用相同的训练随机种子，避免策略运行顺序影响微调结果。
@@ -213,6 +232,12 @@ def main() -> None:
     active_metrics.to_csv(run_dir / "active_round_metrics.csv", index=False, encoding="utf-8-sig")
     selected_points = _selected_points_table(pd.DataFrame(selected_rows), base_candidate_pool)
     selected_points.to_csv(run_dir / "active_selected_rx_points.csv", index=False, encoding="utf-8-sig")
+    if diagnostic_rows:
+        pd.DataFrame(diagnostic_rows).to_csv(
+            run_dir / "proposed_v3_selection_diagnostics.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
     _plot_active_curves(active_metrics, run_dir / "active_curve_rmse.png", "rmse_encoded", "Encoded RMSE")
     _plot_active_curves(active_metrics, run_dir / "active_curve_psnr_ssim.png", "psnr_db", "PSNR (dB)")
     _plot_active_curves(active_metrics, run_dir / "active_curve_ssim.png", "ssim", "SSIM")
@@ -239,6 +264,7 @@ def main() -> None:
             "initial_budget_rx_count": initial_budget,
             "per_round_budget_rx_count": per_round_budget,
             "evaluation": "Metrics are computed on unmeasured rx_id points after each active round.",
+            "selection_diagnostics": "proposed_v3 selection quotas and height/spatial coverage are recorded per round.",
         },
         "rows": {
             "source_pairs": len(source_pairs),
@@ -367,6 +393,7 @@ def _selected_points_table(selected_rows: pd.DataFrame, candidate_pool: pd.DataF
         "rx_height_m",
         "signal_true_norm",
         "signal_pred_norm",
+        "prediction_spread_norm",
         "building_density_nearby",
         "path_building_ratio_simple",
     ]

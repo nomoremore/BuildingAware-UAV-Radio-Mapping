@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene13-run", type=Path, required=True, help="Active sampling run directory for scene 13.")
     parser.add_argument(
         "--main-strategy",
-        default="proposed_v2_j",
+        default="proposed_v3",
         help="Frozen proposed strategy used as the final method in the paper-style summary.",
     )
     parser.add_argument("--output-root", type=Path, default=Path("runs"))
