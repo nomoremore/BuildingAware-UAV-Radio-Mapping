@@ -11,10 +11,23 @@ from pathlib import Path
 import pandas as pd
 
 
-STABILITY_SEEDS = (42, 2024, 3407)
-STABILITY_STRATEGIES = ("random", "uniform_grid", "weak_only", "proposed", "proposed_v2_j")
+STABILITY_SEEDS = (42, 2024, 3407, 1234, 5678, 9012)
+FINAL_STABILITY_STRATEGIES = (
+    "random",
+    "uniform_grid",
+    "weak_only",
+    "building_only",
+    "proposed",
+    "proposed_v2_j",
+    "proposed_v3",
+)
+DEVELOPMENT_STABILITY_STRATEGIES = FINAL_STABILITY_STRATEGIES + (
+    "proposed_v3_rho04",
+    "proposed_v3_rho05",
+    "proposed_v3_rho06",
+)
 BUDGET_SETTINGS = ((0.02, 0.01), (0.05, 0.02), (0.10, 0.02))
-BUDGET_STRATEGIES = ("random", "proposed_v2_j")
+BUDGET_STRATEGIES = ("random", "building_only", "proposed_v3")
 
 
 @dataclass(frozen=True)
@@ -34,6 +47,7 @@ class BatchConfig:
     seeds: tuple[int, ...] = STABILITY_SEEDS
     budget_seed: int = 42
     cpu: bool = False
+    strategy_mode: str = "final"
 
 
 @dataclass(frozen=True)
@@ -97,6 +111,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--antenna-pattern", default="pattern_120")
     parser.add_argument("--dry-run", action="store_true", help="Print planned commands without creating training runs.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip completed configs found in previous batches.")
+    parser.add_argument(
+        "--strategy-mode",
+        choices=("final", "development"),
+        default="final",
+        help="Use the frozen proposed_v3 strategy or the scene-12 rho-selection strategy set.",
+    )
     parser.add_argument("--cpu", action="store_true")
     return parser.parse_args()
 
@@ -117,6 +137,7 @@ def main() -> None:
         frequency=args.frequency,
         antenna_pattern=args.antenna_pattern,
         cpu=args.cpu,
+        strategy_mode=args.strategy_mode,
     )
     specs = build_experiment_specs(config)
     if args.skip_existing:
@@ -136,6 +157,11 @@ def build_experiment_specs(config: BatchConfig) -> list[PaperExperimentSpec]:
     suites = ("stability", "budget") if config.suite == "all" else (config.suite,)
     for suite in suites:
         if suite == "stability":
+            strategies = (
+                DEVELOPMENT_STABILITY_STRATEGIES
+                if config.strategy_mode == "development"
+                else FINAL_STABILITY_STRATEGIES
+            )
             for seed in config.seeds:
                 specs.append(
                     _make_spec(
@@ -145,7 +171,7 @@ def build_experiment_specs(config: BatchConfig) -> list[PaperExperimentSpec]:
                         seed=seed,
                         initial_ratio=0.05,
                         budget_ratio=0.02,
-                        strategies=STABILITY_STRATEGIES,
+                        strategies=strategies,
                     )
                 )
         elif suite == "budget":

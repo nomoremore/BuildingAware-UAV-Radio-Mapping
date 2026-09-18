@@ -15,7 +15,7 @@ import pandas as pd
 
 
 METRICS = ("rmse_encoded", "psnr_db", "ssim", "mean_error_encoded")
-MAIN_PLOT_EXCLUDES = {"building_only"}
+DEFAULT_MAIN_EXCLUDES: set[str] = set()
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,13 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scene12-run", type=Path, required=True)
     parser.add_argument("--scene13-run", type=Path, required=True)
     parser.add_argument("--batch-manifest", type=Path, required=True)
-    parser.add_argument("--main-strategy", default="proposed_v2_j")
+    parser.add_argument("--main-strategy", default="proposed_v3")
     parser.add_argument("--output-root", type=Path, default=Path("runs"))
-    parser.add_argument(
-        "--include-building-only",
-        action="store_true",
-        help="Include building_only in main paper summary plots; disabled by default.",
-    )
     return parser.parse_args()
 
 
@@ -38,7 +33,7 @@ def main() -> None:
     output_dir = args.output_root / f"paper_final_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    exclude_strategies = set() if args.include_building_only else set(MAIN_PLOT_EXCLUDES)
+    exclude_strategies = set(DEFAULT_MAIN_EXCLUDES)
     strategy_summary = build_strategy_mean_std(args.batch_manifest, exclude_strategies=exclude_strategies)
     budget_summary = build_budget_curve_summary(args.batch_manifest, exclude_strategies=exclude_strategies)
     zero_vs_active = build_zero_shot_vs_active_final(
@@ -70,7 +65,7 @@ def build_strategy_mean_std(
     exclude_strategies: set[str] | None = None,
 ) -> pd.DataFrame:
     if exclude_strategies is None:
-        exclude_strategies = set(MAIN_PLOT_EXCLUDES)
+        exclude_strategies = set(DEFAULT_MAIN_EXCLUDES)
     run_rows = _completed_manifest_rows(batch_manifest, suite="stability")
     metric_rows = []
     for _, row in run_rows.iterrows():
@@ -84,8 +79,13 @@ def build_strategy_mean_std(
 
     combined = pd.concat(metric_rows, ignore_index=True)
     combined = _filter_excluded_strategies(combined, exclude_strategies)
+    # 每个 seed 的最低 RMSE 记为一次胜出，用于报告跨随机种子的逐 seed 胜率。
+    combined["rmse_is_win"] = combined.groupby("run_dir")["rmse_encoded"].transform(
+        lambda values: np.isclose(values, values.min())
+    )
     grouped = combined.groupby("strategy", as_index=False).agg(
         run_count=("run_dir", "nunique"),
+        rmse_win_rate=("rmse_is_win", "mean"),
         rmse_encoded_mean=("rmse_encoded", "mean"),
         rmse_encoded_std=("rmse_encoded", "std"),
         psnr_db_mean=("psnr_db", "mean"),
@@ -105,7 +105,7 @@ def build_budget_curve_summary(
     exclude_strategies: set[str] | None = None,
 ) -> pd.DataFrame:
     if exclude_strategies is None:
-        exclude_strategies = set(MAIN_PLOT_EXCLUDES)
+        exclude_strategies = set(DEFAULT_MAIN_EXCLUDES)
     run_rows = _completed_manifest_rows(batch_manifest, suite="budget")
     metric_rows = []
     for _, row in run_rows.iterrows():
@@ -391,6 +391,7 @@ def _empty_strategy_mean_std() -> pd.DataFrame:
         columns=[
             "strategy",
             "run_count",
+            "rmse_win_rate",
             "rmse_encoded_mean",
             "rmse_encoded_std",
             "psnr_db_mean",
